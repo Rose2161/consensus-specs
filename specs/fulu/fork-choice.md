@@ -1,9 +1,8 @@
 # Fulu -- Fork Choice
 
-## Table of contents
-<!-- TOC -->
-<!-- START doctoc generated TOC please keep comment here to allow auto update -->
-<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+*Note*: This document is a work-in-progress for researchers and implementers.
+
+<!-- mdformat-toc start --slug=github --no-anchors --maxlevel=6 --minlevel=2 -->
 
 - [Introduction](#introduction)
 - [Helpers](#helpers)
@@ -11,8 +10,7 @@
 - [Updated fork-choice handlers](#updated-fork-choice-handlers)
   - [Modified `on_block`](#modified-on_block)
 
-<!-- END doctoc generated TOC please keep comment here to allow auto update -->
-<!-- /TOC -->
+<!-- mdformat-toc end -->
 
 ## Introduction
 
@@ -41,7 +39,8 @@ def is_data_available(beacon_block_root: Root) -> bool:
 
 ### Modified `on_block`
 
-*Note*: The only modification is that `is_data_available` does not take `blob_kzg_commitments` as input.
+*Note*: The only modification is that `is_data_available` does not take
+`blob_kzg_commitments` as input.
 
 ```python
 def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:

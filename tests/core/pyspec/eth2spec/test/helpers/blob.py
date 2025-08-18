@@ -1,32 +1,45 @@
 import random
-from rlp import encode, Serializable
-from rlp.sedes import Binary, CountableList, List as RLPList, big_endian_int, binary
+from functools import cache
+from random import Random
 
+from rlp import encode, Serializable
+from rlp.sedes import big_endian_int, Binary, binary, CountableList, List as RLPList
+
+from eth2spec.test.helpers.block import build_empty_block_for_next_slot
+from eth2spec.test.helpers.execution_payload import compute_el_block_hash
 from eth2spec.test.helpers.forks import (
     is_post_electra,
     is_post_fulu,
 )
+from eth2spec.test.helpers.state import state_transition_and_sign_block
 
 
 class Eip4844RlpTransaction(Serializable):
     fields = (
-        ('chain_id', big_endian_int),
-        ('nonce', big_endian_int),
-        ('max_priority_fee_per_gas', big_endian_int),
-        ('max_fee_per_gas', big_endian_int),
-        ('gas_limit', big_endian_int),
-        ('to', Binary(20, 20)),
-        ('value', big_endian_int),
-        ('data', binary),
-        ('access_list', CountableList(RLPList([
-            Binary(20, 20),
-            CountableList(Binary(32, 32)),
-        ]))),
-        ('max_fee_per_blob_gas', big_endian_int),
-        ('blob_versioned_hashes', CountableList(Binary(32, 32))),
-        ('signature_y_parity', big_endian_int),
-        ('signature_r', big_endian_int),
-        ('signature_s', big_endian_int),
+        ("chain_id", big_endian_int),
+        ("nonce", big_endian_int),
+        ("max_priority_fee_per_gas", big_endian_int),
+        ("max_fee_per_gas", big_endian_int),
+        ("gas_limit", big_endian_int),
+        ("to", Binary(20, 20)),
+        ("value", big_endian_int),
+        ("data", binary),
+        (
+            "access_list",
+            CountableList(
+                RLPList(
+                    [
+                        Binary(20, 20),
+                        CountableList(Binary(32, 32)),
+                    ]
+                )
+            ),
+        ),
+        ("max_fee_per_blob_gas", big_endian_int),
+        ("blob_versioned_hashes", CountableList(Binary(32, 32))),
+        ("signature_y_parity", big_endian_int),
+        ("signature_r", big_endian_int),
+        ("signature_s", big_endian_int),
     )
 
 
@@ -36,7 +49,7 @@ def get_sample_blob(spec, rng=random.Random(5566), is_valid_blob=True):
         for _ in range(spec.FIELD_ELEMENTS_PER_BLOB)
     ]
 
-    b = bytes()
+    b = b""
     for v in values:
         b += v.to_bytes(32, spec.KZG_ENDIANNESS)
 
@@ -60,8 +73,13 @@ def get_poly_in_both_forms(spec, rng=None):
     if rng is None:
         rng = random.Random(5566)
 
-    roots_of_unity_brp = spec.bit_reversal_permutation(spec.compute_roots_of_unity(spec.FIELD_ELEMENTS_PER_BLOB))
-    coeffs = [spec.BLSFieldElement(rng.randint(0, spec.BLS_MODULUS - 1)) for _ in range(spec.FIELD_ELEMENTS_PER_BLOB)]
+    roots_of_unity_brp = spec.bit_reversal_permutation(
+        spec.compute_roots_of_unity(spec.FIELD_ELEMENTS_PER_BLOB)
+    )
+    coeffs = [
+        spec.BLSFieldElement(rng.randint(0, spec.BLS_MODULUS - 1))
+        for _ in range(spec.FIELD_ELEMENTS_PER_BLOB)
+    ]
     evals = [eval_poly_in_coeff_form(spec, coeffs, z) for z in roots_of_unity_brp]
 
     return coeffs, evals
@@ -106,10 +124,39 @@ def get_sample_blob_tx(spec, blob_count=1, rng=random.Random(5566), is_valid_blo
     return opaque_tx, blobs, blob_kzg_commitments, blob_kzg_proofs
 
 
-def get_max_blob_count(spec):
+def get_max_blob_count(spec, state):
     if is_post_fulu(spec):
-        return spec.config.MAX_BLOBS_PER_BLOCK_FULU
+        return spec.get_blob_parameters(spec.get_current_epoch(state)).max_blobs_per_block
     elif is_post_electra(spec):
         return spec.config.MAX_BLOBS_PER_BLOCK_ELECTRA
     else:
         return spec.config.MAX_BLOBS_PER_BLOCK
+
+
+def get_block_with_blob(spec, state, rng: Random | None = None, blob_count=1):
+    block = build_empty_block_for_next_slot(spec, state)
+    opaque_tx, blobs, blob_kzg_commitments, blob_kzg_proofs = get_sample_blob_tx(
+        spec, blob_count=blob_count, rng=rng or random.Random(5566)
+    )
+    block.body.execution_payload.transactions = [opaque_tx]
+    block.body.execution_payload.block_hash = compute_el_block_hash(
+        spec, block.body.execution_payload, state
+    )
+    block.body.blob_kzg_commitments = blob_kzg_commitments
+    return block, blobs, blob_kzg_proofs
+
+
+def get_block_with_blob_and_sidecars(spec, state, rng=None, blob_count=1):
+    block, blobs, blob_kzg_proofs = get_block_with_blob(spec, state, rng=rng, blob_count=blob_count)
+    cells_and_kzg_proofs = [_cached_compute_cells_and_kzg_proofs(spec, blob) for blob in blobs]
+
+    # We need a signed block to call `get_data_column_sidecars_from_block`
+    signed_block = state_transition_and_sign_block(spec, state, block)
+
+    sidecars = spec.get_data_column_sidecars_from_block(signed_block, cells_and_kzg_proofs)
+    return block, blobs, blob_kzg_proofs, signed_block, sidecars
+
+
+@cache
+def _cached_compute_cells_and_kzg_proofs(spec, blob):
+    return spec.compute_cells_and_kzg_proofs(blob)
